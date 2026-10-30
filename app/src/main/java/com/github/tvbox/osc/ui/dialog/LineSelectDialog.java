@@ -11,6 +11,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import com.github.tvbox.osc.R;
+import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.bean.MoreSourceBean;
 import com.github.tvbox.osc.ui.adapter.LineSelectAdapter;
 import com.github.tvbox.osc.util.HawkConfig;
@@ -92,6 +93,7 @@ public class LineSelectDialog extends BaseDialog {
                         MoreSourceHelper.AUTO_PREFIX_LINE, MoreSourceHelper.getLineHistory());
                 mAdapter.setData(new ArrayList<>(lineList));
                 focusList();
+                syncConfigSwitchLines();
             }
         });
         mListView.setAdapter(mAdapter);
@@ -150,6 +152,7 @@ public class LineSelectDialog extends BaseDialog {
         if (selectedStore == null || selectedStore.getSourceUrl() == null || selectedStore.getSourceUrl().isEmpty()) {
             mAdapter.setData(new ArrayList<>(lineList));
             focusList();
+            syncConfigSwitchLines();
             return;
         }
 
@@ -188,6 +191,7 @@ public class LineSelectDialog extends BaseDialog {
                             Toast.makeText(mContext, "线路加载失败:" + err, Toast.LENGTH_SHORT).show();
                             mAdapter.setData(new ArrayList<>(lineList));
                             focusList();
+                            syncConfigSwitchLines();
                             return;
                         }
                         parseLines(res, url);
@@ -218,6 +222,7 @@ public class LineSelectDialog extends BaseDialog {
                 }
                 mAdapter.setData(new ArrayList<>(lineList));
                 focusList();
+                syncConfigSwitchLines();
                 return;
             }
             JSONArray urls = json.getJSONArray("urls");
@@ -245,11 +250,20 @@ public class LineSelectDialog extends BaseDialog {
             lineList.addAll(map.values());
             mAdapter.setData(new ArrayList<>(lineList));
             focusList();
+            syncConfigSwitchLines();
         } catch (Throwable th) {
             Toast.makeText(mContext, "接口无效，请更换接口" + th.getMessage(), Toast.LENGTH_SHORT).show();
             mAdapter.setData(new ArrayList<>(lineList));
             focusList();
+            syncConfigSwitchLines();
         }
+    }
+
+    /** "线路切换"内容变化 → 同步直播"配置切换"（播放器共用同一份数据） */
+    private void syncConfigSwitchLines() {
+        if (!showHistory) return;
+        MoreSourceHelper.saveConfigSwitchLines(lineList);
+        ApiConfig.get().refreshLiveApiHistoryItems();
     }
 
     /** v2.1.4：列表数据就绪后把遥控器焦点交给列表（TV D-pad 可选中线路/删除） */

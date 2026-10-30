@@ -46,6 +46,7 @@ import com.github.tvbox.osc.bean.LiveEpgDate;
 import com.github.tvbox.osc.bean.LivePlayerManager;
 import com.github.tvbox.osc.bean.LiveSettingGroup;
 import com.github.tvbox.osc.bean.LiveSettingItem;
+import com.github.tvbox.osc.bean.MoreSourceBean;
 import com.github.tvbox.osc.player.controller.LiveController;
 import com.github.tvbox.osc.ui.adapter.LiveChannelGroupAdapter;
 import com.github.tvbox.osc.ui.adapter.LiveChannelItemAdapter;
@@ -64,6 +65,7 @@ import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
 import com.github.tvbox.osc.util.HistoryHelper;
+import com.github.tvbox.osc.util.MoreSourceHelper;
 import com.github.tvbox.osc.util.live.TxtSubscribe;
 import com.google.gson.JsonArray;
 import org.apache.commons.lang3.StringUtils;
@@ -2554,6 +2556,14 @@ public class LivePlayActivity extends BaseActivity {
             return;
 
         liveSettingGroupAdapter.setSelectedGroupIndex(position);
+        if (position == 5) {
+            // 多源切换：每次展开都按"直播地址"弹窗的同一份列表重建
+            ApiConfig.get().refreshLiveMultiSourceItems();
+        }
+        if (position == 6) {
+            // 配置切换：每次展开都按"线路切换"弹窗的线路快照重建，保证两处内容一致
+            ApiConfig.get().refreshLiveApiHistoryItems();
+        }
         liveSettingItemAdapter.setNewData(liveSettingGroupList.get(position).getLiveSettingItems());
 
         switch (position) {
@@ -2569,6 +2579,9 @@ public class LivePlayActivity extends BaseActivity {
                 break;
             case 2:
                 liveSettingItemAdapter.selectItem(livePlayerManager.getLivePlayerType(), true, true);
+                break;
+            case 5:
+                liveSettingItemAdapter.selectItem(MoreSourceHelper.getCurrentLiveLineIndex(), true, true);
                 break;
             case 6:
                 liveSettingItemAdapter.selectItem(getCurrentLiveApiHistoryIndex(), true, true);
@@ -2679,38 +2692,113 @@ public class LivePlayActivity extends BaseActivity {
                 }
                 liveSettingItemAdapter.selectItem(position, select, false);
                 break;
-            case 5://多源切换
-                //TODO
-                if(position==ApiConfig.getLiveGroupIndex())break;
+            case 5: {//多源切换（与"直播地址"弹窗同一份列表：用户自定义源 + 接口配置文件直播线路）
+                List<MoreSourceBean> liveLines = MoreSourceHelper.getLiveDialogList();
+                if (position < 0 || position >= liveLines.size()) break;
+                MoreSourceBean liveBean = liveLines.get(position);
                 String currentChannelName = getPreferredLiveRefreshChannelName();
                 int currentSourceIndex = getPreferredLiveRefreshSourceIndex();
-                JsonArray live_groups=Hawk.get(HawkConfig.LIVE_GROUP_LIST,new JsonArray());
-                if (live_groups == null || position >= live_groups.size()) break;
+                String oldLiveApi = Hawk.get(HawkConfig.LIVE_API_URL, "");
+                String apiUrl = Hawk.get(HawkConfig.API_URL, "");
+                if (liveBean.isShowDelete()) {
+                    String value = liveBean.getSourceUrl();
+                    liveSettingItemAdapter.selectItem(position, true, true);
+                    if (value == null || value.isEmpty() || value.equals(oldLiveApi)) break;
+                    final int requestId = ++liveConfigRequestId;
+                    final String oldLiveApiValue = oldLiveApi;
+                    final int oldGroupIndex = ApiConfig.getLiveGroupIndex();
+                    Hawk.put(HawkConfig.LIVE_API_URL, value);
+                    ApiConfig.setLiveGroupIndex(0); // 默认使用该配置的第一条直播线路
+                    ApiConfig.get().refreshLiveApiHistoryItems();
+                    ApiConfig.get().refreshLiveMultiSourceItems();
+                    ApiConfig.get().loadLiveConfig(false, new ApiConfig.LoadConfigCallback() {
+                        @Override
+                        public void success() {
+                            mHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (requestId != liveConfigRequestId || isFinishing()) return;
+                                    refreshLiveChannelListAndPlay(currentChannelName, currentSourceIndex);
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void error(String msg) {
+                            mHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (requestId != liveConfigRequestId || isFinishing()) return;
+                                    if (mVideoView != null) mVideoView.release();
+                                    // 切换失败 → 回滚到原直播线路并重新加载
+                                    Hawk.put(HawkConfig.LIVE_API_URL, oldLiveApiValue);
+                                    ApiConfig.setLiveGroupIndex(oldGroupIndex);
+                                    ApiConfig.get().refreshLiveApiHistoryItems();
+                                    ApiConfig.get().refreshLiveMultiSourceItems();
+                                    Toast.makeText(LivePlayActivity.this, msg, Toast.LENGTH_SHORT).show();
+                                    refreshLiveChannelListAndPlay(currentChannelName, currentSourceIndex);
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void notice(String msg) {
+                            mHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (requestId != liveConfigRequestId || isFinishing()) return;
+                                    Toast.makeText(LivePlayActivity.this, msg, Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                    });
+                    break;
+                }
+                // 接口配置文件中的直播线路 → 切换多源分组
+                int groupIndex = liveBean.getLiveGroupIndex();
+                JsonArray live_groups = Hawk.get(HawkConfig.LIVE_GROUP_LIST, new JsonArray());
+                if (live_groups == null || groupIndex < 0 || groupIndex >= live_groups.size()) break;
+                boolean wasConfigSource = oldLiveApi == null || oldLiveApi.isEmpty()
+                        || (apiUrl != null && oldLiveApi.equals(apiUrl));
+                if (wasConfigSource && groupIndex == ApiConfig.getLiveGroupIndex()) break;
+                int oldGroupIndex = ApiConfig.getLiveGroupIndex();
                 liveConfigRequestId++;
-                JsonObject livesOBJ = live_groups.get(position).getAsJsonObject();
                 liveSettingItemAdapter.selectItem(position, true, true);
-                ApiConfig.setLiveGroupIndex(position);
+                if (apiUrl != null) Hawk.put(HawkConfig.LIVE_API_URL, apiUrl);
+                ApiConfig.setLiveGroupIndex(groupIndex);
+                ApiConfig.get().refreshLiveApiHistoryItems();
+                ApiConfig.get().refreshLiveMultiSourceItems();
+                JsonObject livesOBJ = live_groups.get(groupIndex).getAsJsonObject();
                 ApiConfig.get().loadLiveApi(livesOBJ);
                 if (ApiConfig.get().getChannelGroupList().isEmpty()) {
-                    if (mVideoView != null) mVideoView.release();
-                    setEmptyLiveChannelList(false);
+                    // 切换失败 → 回滚原直播线路与分组并重新加载
+                    Hawk.put(HawkConfig.LIVE_API_URL, oldLiveApi);
+                    ApiConfig.setLiveGroupIndex(oldGroupIndex);
+                    ApiConfig.get().refreshLiveApiHistoryItems();
+                    ApiConfig.get().refreshLiveMultiSourceItems();
+                    refreshLiveChannelListAndPlay(currentChannelName, currentSourceIndex);
                     break;
                 }
                 refreshLiveChannelListAndPlay(currentChannelName, currentSourceIndex);
                 break;
+            }
             case 6: {//配置切换
-                ArrayList<String> history = Hawk.get(HawkConfig.LIVE_API_HISTORY, new ArrayList<String>());
-                if (history.isEmpty() || position < 0 || position >= history.size()) break;
-                String value = history.get(position);
+                // 使用"线路切换"弹窗的线路快照，保证两边内容一一对应
+                List<MoreSourceBean> configLines = MoreSourceHelper.getConfigSwitchLines();
+                if (position < 0 || position >= configLines.size()) break;
+                String value = configLines.get(position).getSourceUrl();
                 String oldLiveApi = Hawk.get(HawkConfig.LIVE_API_URL, "");
                 String configChannelName = getPreferredLiveRefreshChannelName();
                 int configSourceIndex = getPreferredLiveRefreshSourceIndex();
                 liveSettingItemAdapter.selectItem(position, true, true);
                 if (value.equals(oldLiveApi)) break;
                 final int requestId = ++liveConfigRequestId;
+                final String oldLiveApiValue = oldLiveApi;
+                final int oldGroupIndex = ApiConfig.getLiveGroupIndex();
                 Hawk.put(HawkConfig.LIVE_API_URL, value);
-                HistoryHelper.setLiveApiHistory(value);
+                ApiConfig.setLiveGroupIndex(0); // 默认使用该配置的第一条直播线路
                 ApiConfig.get().refreshLiveApiHistoryItems();
+                ApiConfig.get().refreshLiveMultiSourceItems();
                 ApiConfig.get().loadLiveConfig(false, new ApiConfig.LoadConfigCallback() {
                     @Override
                     public void success() {
@@ -2730,9 +2818,13 @@ public class LivePlayActivity extends BaseActivity {
                             public void run() {
                                 if (requestId != liveConfigRequestId || isFinishing()) return;
                                 if (mVideoView != null) mVideoView.release();
+                                // 切换失败 → 回滚到原直播配置地址与分组并重新加载
+                                Hawk.put(HawkConfig.LIVE_API_URL, oldLiveApiValue);
+                                ApiConfig.setLiveGroupIndex(oldGroupIndex);
                                 ApiConfig.get().refreshLiveApiHistoryItems();
-                                setEmptyLiveChannelList(false);
+                                ApiConfig.get().refreshLiveMultiSourceItems();
                                 Toast.makeText(LivePlayActivity.this, msg, Toast.LENGTH_SHORT).show();
+                                refreshLiveChannelListAndPlay(configChannelName, configSourceIndex);
                             }
                         });
                     }
@@ -2791,11 +2883,8 @@ public class LivePlayActivity extends BaseActivity {
     }
 
     private int getCurrentLiveApiHistoryIndex() {
-        ArrayList<String> history = Hawk.get(HawkConfig.LIVE_API_HISTORY, new ArrayList<String>());
-        if (history.isEmpty()) return -1;
-        String current = Hawk.get(HawkConfig.LIVE_API_URL, "");
-        int idx = history.indexOf(current);
-        return idx >= 0 ? idx : -1;
+        // 与"线路切换"弹窗保持一致：直接读取该弹窗最近一次渲染出的线路快照
+        return MoreSourceHelper.getConfigSwitchIndex();
     }
 
     private void initLiveChannelList() {

@@ -17,6 +17,16 @@ public class MoreSourceBean implements Serializable {
     private boolean showDelete = false;
     private boolean isLocalPackage = false;
     private List<MoreSourceBean> localLineUrls;
+    /** 接口配置文件中的直播线路在 LIVE_GROUP_LIST 中的下标；用户自行添加的直播源为 -1 */
+    private int liveGroupIndex = -1;
+
+    public int getLiveGroupIndex() {
+        return this.liveGroupIndex;
+    }
+
+    public void setLiveGroupIndex(int liveGroupIndex) {
+        this.liveGroupIndex = liveGroupIndex;
+    }
 
     public List<MoreSourceBean> getLocalLineUrls() {
         return this.localLineUrls;
